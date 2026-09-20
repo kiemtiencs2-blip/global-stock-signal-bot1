@@ -1,9 +1,15 @@
 import numpy as np
 import pandas as pd
 
+
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     x = df.copy()
-    close, high, low, vol = x["Close"], x["High"], x["Low"], x["Volume"]
+    if x.empty:
+        return x
+    close = x["Close"]
+    high = x["High"]
+    low = x["Low"]
+    vol = x["Volume"]
 
     x["MA20"] = close.rolling(20).mean()
     x["MA50"] = close.rolling(50).mean()
@@ -23,7 +29,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     tr = pd.concat([
         high - low,
         (high - close.shift()).abs(),
-        (low - close.shift()).abs()
+        (low - close.shift()).abs(),
     ], axis=1).max(axis=1)
     x["ATR"] = tr.rolling(14).mean()
     x["VOL_MA20"] = vol.rolling(20).mean()
