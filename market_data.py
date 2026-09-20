@@ -216,7 +216,7 @@ def convert_to_eur_price(price: float, symbol: str, currency: str | None = None)
     return price / rate if rate else None
 
 
-def download_ohlcv(symbol: str, interval: str = "1d", period: str = "1y") -> pd.DataFrame:
+def download_ohlc(symbol: str, interval: str = "1d", period: str = "1y") -> pd.DataFrame:
     df = yf.download(
         symbol,
         period=period,
@@ -234,5 +234,9 @@ def download_ohlcv(symbol: str, interval: str = "1d", period: str = "1y") -> pd.
     return df
 
 
+def download_ohlcv(symbol: str, interval: str = "1d", period: str = "1y") -> pd.DataFrame:
+    return download_ohlc(symbol, interval=interval, period=period)
+
+
 def download_daily(symbol: str, period: str = "1y") -> pd.DataFrame:
-    return download_ohlcv(symbol, interval="1d", period=period)
+    return download_ohlc(symbol, interval="1d", period=period)

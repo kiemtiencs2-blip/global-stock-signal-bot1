@@ -3,7 +3,7 @@ from threading import Lock
 
 import pandas as pd
 
-from market_data import download_ohlcv, get_market_quote
+from market_data import download_ohlc, get_market_quote
 from strategy import make_signal
 
 
@@ -45,7 +45,7 @@ def _scan_symbol(symbol, data_cache, cache_lock):
         with cache_lock:
             if key in data_cache:
                 return data_cache[key]
-        frame = download_ohlcv(symbol, interval=interval, period=period)
+        frame = download_ohlc(symbol, interval=interval, period=period)
         with cache_lock:
             data_cache[key] = frame
         return frame

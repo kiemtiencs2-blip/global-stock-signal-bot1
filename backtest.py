@@ -1,7 +1,7 @@
 import pandas as pd
 
 from config import WATCHLIST
-from market_data import _currency_for_symbol, download_daily, download_ohlcv
+from market_data import _currency_for_symbol, download_daily, download_ohlc
 from strategy import make_signal
 
 
@@ -166,7 +166,7 @@ def _summary(results, message=""):
 
 def _checked_signal_outcome(signal):
     symbol = signal["symbol"]
-    frame = _normalise_index(download_ohlcv(symbol, "15m", "60d"))
+    frame = _normalise_index(download_ohlc(symbol, "15m", "60d"))
     if frame.empty:
         return {"status": "UNCERTAIN", "exit_timestamp": None, "pnl_eur": 0.0}
 
@@ -231,10 +231,10 @@ def run_historical_backtest(days, watchlist=WATCHLIST):
     unavailable = []
     for symbol in watchlist:
         frames = {
-            "15m": _normalise_index(download_ohlcv(symbol, "15m", "60d")),
-            "1h": _normalise_index(download_ohlcv(symbol, "1h", "730d")),
-            "4h": _normalise_index(download_ohlcv(symbol, "4h", "5y")),
-            "1d": _normalise_index(download_ohlcv(symbol, "1d", "10y")),
+            "15m": _normalise_index(download_ohlc(symbol, "15m", "60d")),
+            "1h": _normalise_index(download_ohlc(symbol, "1h", "730d")),
+            "4h": _normalise_index(download_ohlc(symbol, "4h", "5y")),
+            "1d": _normalise_index(download_ohlc(symbol, "1d", "10y")),
         }
         if frames["15m"].empty:
             unavailable.append(symbol)
