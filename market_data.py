@@ -9,6 +9,16 @@ MARKET_MAX_AGE = pd.Timedelta(minutes=30)
 MARKET_FALLBACK_MAX_AGE = pd.Timedelta(days=3)
 YFINANCE_TIMEOUT_SECONDS = 10
 
+__all__ = [
+    "_currency_for_symbol",
+    "convert_to_eur_price",
+    "download_daily",
+    "download_ohlc",
+    "download_ohlcv",
+    "get_fx_context",
+    "get_market_quote",
+]
+
 
 def _get_fx_rate(pair: str):
     if pair in FX_CACHE:
