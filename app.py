@@ -165,13 +165,12 @@ with backtest_tab:
     else:
         if bt.get("message"):
             st.warning(bt["message"])
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Total trades", bt["total_trades"])
         c2.metric("WIN", bt["WIN"])
         c3.metric("LOSS", bt["LOSS"])
         c4.metric("OPEN", bt["OPEN"])
-        c5.metric("NO ENTRY", bt["NO ENTRY"])
-        c6.metric("UNCERTAIN", bt["UNCERTAIN"])
+        c5.metric("DATA UNAVAILABLE", bt["DATA_UNAVAILABLE"])
 
         c6, c7, c8 = st.columns(3)
         c6.metric("Net P&L", f"€{bt['net_pnl']:.2f}")

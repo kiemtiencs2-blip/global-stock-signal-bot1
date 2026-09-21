@@ -6,6 +6,12 @@ from strategy import make_signal
 
 
 PERIOD_DAYS = (30, 90, 180, 365)
+PROVIDER_WINDOWS = {
+    "15m": pd.Timedelta(days=60),
+    "1h": pd.Timedelta(days=730),
+    "4h": pd.Timedelta(days=1825),
+    "1d": pd.Timedelta(days=3650),
+}
 
 
 def _utc_timestamp(value):
@@ -32,7 +38,24 @@ def _rows_at_or_before(df, timestamp):
     return frame.loc[frame.index <= signal_timestamp]
 
 
-def _evaluate_from_entry(signal, future):
+TIMEFRAME_ORDER = ("15m", "1h", "1d")
+TIMEFRAME_DURATION = {
+    "15m": pd.Timedelta(minutes=15),
+    "1h": pd.Timedelta(hours=1),
+    "1d": pd.Timedelta(days=1),
+}
+
+
+def _data_unavailable():
+    return {"status": "DATA_UNAVAILABLE", "exit_timestamp": None, "pnl_eur": 0.0}
+
+
+def _timeframe_is_available(signal_timestamp, timeframe, now=None):
+    now = now or pd.Timestamp.now(tz="UTC")
+    return signal_timestamp >= now - PROVIDER_WINDOWS[timeframe]
+
+
+def _evaluate_from_entry(signal, future, finer_future=None, next_finer_future=None):
     entry = float(signal["entry_raw"])
     tp = float(signal["tp_raw"])
     sl = float(signal["sl_raw"])
@@ -46,7 +69,21 @@ def _evaluate_from_entry(signal, future):
         else:
             tp_hit, sl_hit = low <= tp, high >= sl
         if tp_hit and sl_hit:
-            return {"status": "UNCERTAIN", "exit_timestamp": index, "pnl_eur": 0.0}
+            if finer_future is None or finer_future.empty:
+                return _data_unavailable()
+            finer_rows = finer_future.loc[
+                (finer_future.index >= index)
+                & (finer_future.index < index + TIMEFRAME_DURATION[signal["timeframe"]])
+            ]
+            if finer_rows.empty:
+                return _data_unavailable()
+            finer_signal = dict(signal)
+            finer_signal["timeframe"] = signal["finer_timeframe"]
+            if signal["timeframe"] == "1d":
+                finer_signal["finer_timeframe"] = "15m"
+            return _evaluate_from_entry(
+                finer_signal, finer_rows, next_finer_future
+            )
         if tp_hit:
             return {"status": "WIN", "exit_timestamp": index, "pnl_eur": 20.0}
         if sl_hit:
@@ -58,7 +95,7 @@ def evaluate_signal(signal, df=None, period="3mo"):
     if df is None:
         df = download_daily(signal["symbol"], period=period)
     if df is None or df.empty:
-        return {"status": "NO DATA", "pnl_eur": 0.0, "timestamp": None}
+        return {"status": "DATA_UNAVAILABLE", "pnl_eur": 0.0, "timestamp": None}
 
     df = _normalise_index(df)
 
@@ -74,7 +111,7 @@ def evaluate_signal(signal, df=None, period="3mo"):
 
     future = df.loc[df.index >= signal_ts].copy()
     if future.empty:
-        return {"status": "NO ENTRY", "pnl_eur": 0.0, "timestamp": None}
+        return {"status": "DATA_UNAVAILABLE", "pnl_eur": 0.0, "timestamp": None}
 
     hit_entry = False
     entry_idx = None
@@ -87,7 +124,7 @@ def evaluate_signal(signal, df=None, period="3mo"):
             break
 
     if not hit_entry:
-        return {"status": "NO ENTRY", "pnl_eur": 0.0, "timestamp": None}
+        return {"status": "DATA_UNAVAILABLE", "pnl_eur": 0.0, "timestamp": None}
 
     entry_idx = _utc_timestamp(entry_idx)
     after_entry = future.loc[future.index >= entry_idx].copy()
@@ -102,7 +139,7 @@ def evaluate_signal(signal, df=None, period="3mo"):
             sl_hit = hi >= sl
 
         if tp_hit and sl_hit:
-            return {"status": "UNCERTAIN", "timestamp": idx, "pnl_eur": 0.0}
+            return {"status": "DATA_UNAVAILABLE", "timestamp": idx, "pnl_eur": 0.0}
         if tp_hit:
             return {"status": "WIN", "timestamp": idx, "pnl_eur": 20.0}
         if sl_hit:
@@ -117,8 +154,7 @@ def _empty_summary(message=""):
         "WIN": 0,
         "LOSS": 0,
         "OPEN": 0,
-        "NO ENTRY": 0,
-        "UNCERTAIN": 0,
+        "DATA_UNAVAILABLE": 0,
         "net_pnl": 0.0,
         "win_rate": 0.0,
         "max_drawdown": 0.0,
@@ -133,8 +169,7 @@ def _summary(results, message=""):
     wins = sum(1 for r in results if r["status"] == "WIN")
     losses = sum(1 for r in results if r["status"] == "LOSS")
     open_trades = sum(1 for r in results if r["status"] == "OPEN")
-    no_entry = sum(1 for r in results if r["status"] == "NO ENTRY")
-    uncertain = sum(1 for r in results if r["status"] == "UNCERTAIN")
+    unavailable = sum(1 for r in results if r["status"] == "DATA_UNAVAILABLE")
     net_pnl = sum(float(r["pnl_eur"]) for r in results)
     win_rate = (wins / max(1, wins + losses)) * 100 if (wins + losses) else 0.0
 
@@ -154,8 +189,7 @@ def _summary(results, message=""):
         "WIN": wins,
         "LOSS": losses,
         "OPEN": open_trades,
-        "NO ENTRY": no_entry,
-        "UNCERTAIN": uncertain,
+        "DATA_UNAVAILABLE": unavailable,
         "net_pnl": net_pnl,
         "win_rate": win_rate,
         "max_drawdown": max_drawdown,
@@ -166,17 +200,13 @@ def _summary(results, message=""):
 
 def _checked_signal_outcome(signal):
     symbol = signal["symbol"]
-    frame = _normalise_index(download_ohlc(symbol, "15m", "60d"))
-    if frame.empty:
-        return {"status": "UNCERTAIN", "exit_timestamp": None, "pnl_eur": 0.0}
-
     signal_timestamp = _utc_timestamp(signal["timestamp"])
-    future = frame.loc[frame.index > signal_timestamp].copy()
-    if future.empty:
-        return {"status": "UNCERTAIN", "exit_timestamp": None, "pnl_eur": 0.0}
     fx_rate = signal.get("fx_rate")
     if fx_rate is None or float(fx_rate) <= 0:
-        return {"status": "UNCERTAIN", "exit_timestamp": None, "pnl_eur": 0.0}
+        return _data_unavailable()
+    now = pd.Timestamp.now(tz="UTC")
+    if not _timeframe_is_available(signal_timestamp, "1h", now):
+        return _data_unavailable()
     entry = float(signal["entry"]) * float(fx_rate)
     tp = float(signal["tp"]) * float(fx_rate)
     sl = float(signal["sl"]) * float(fx_rate)
@@ -186,11 +216,38 @@ def _checked_signal_outcome(signal):
         "sl_raw": sl,
         "direction": signal["direction"],
     }
-    return _evaluate_from_entry(checked_signal, future)
-
-
-def _uncertain_outcome():
-    return {"status": "UNCERTAIN", "exit_timestamp": None, "pnl_eur": 0.0}
+    frames = {}
+    for timeframe, period in (("15m", "60d"), ("1h", "730d"), ("1d", "10y")):
+        if _timeframe_is_available(signal_timestamp, timeframe, now):
+            frames[timeframe] = _normalise_index(
+                download_ohlc(symbol, timeframe, period)
+            )
+        else:
+            frames[timeframe] = pd.DataFrame()
+    for index, timeframe in enumerate(TIMEFRAME_ORDER):
+        frame = frames[timeframe]
+        future = frame.loc[frame.index > signal_timestamp].copy()
+        if future.empty:
+            continue
+        checked_signal["timeframe"] = timeframe
+        if index > 0:
+            finer_timeframe = TIMEFRAME_ORDER[index - 1]
+            checked_signal["finer_timeframe"] = finer_timeframe
+            finer_future = frames[finer_timeframe].loc[
+                frames[finer_timeframe].index > signal_timestamp
+            ]
+            next_finer_future = (
+                frames["15m"].loc[frames["15m"].index > signal_timestamp]
+                if timeframe == "1d"
+                else None
+            )
+        else:
+            finer_future = None
+            next_finer_future = None
+        return _evaluate_from_entry(
+            checked_signal, future, finer_future, next_finer_future
+        )
+    return _data_unavailable()
 
 
 def run_checked_backtest(signals):
@@ -199,7 +256,7 @@ def run_checked_backtest(signals):
         try:
             outcome = _checked_signal_outcome(signal)
         except Exception:
-            outcome = _uncertain_outcome()
+            outcome = _data_unavailable()
         outcome.update({
             "symbol": signal.get("symbol", ""),
             "direction": signal.get("direction", ""),
@@ -219,8 +276,7 @@ def run_historical_backtest(days, watchlist=WATCHLIST):
     """Replay the V3 engine using only candles known at each 15m timestamp.
 
     Yahoo Finance only retains a limited amount of 15m history. The replay
-    therefore returns an explicit limitation instead of substituting another
-    timeframe or fabricating candles.
+    and uses the next available timeframe for outcome evaluation.
     """
     if days not in PERIOD_DAYS:
         raise ValueError(f"days must be one of {PERIOD_DAYS}")
@@ -230,13 +286,20 @@ def run_historical_backtest(days, watchlist=WATCHLIST):
     data_by_symbol = {}
     unavailable = []
     for symbol in watchlist:
-        frames = {
-            "15m": _normalise_index(download_ohlc(symbol, "15m", "60d")),
-            "1h": _normalise_index(download_ohlc(symbol, "1h", "730d")),
-            "4h": _normalise_index(download_ohlc(symbol, "4h", "5y")),
-            "1d": _normalise_index(download_ohlc(symbol, "1d", "10y")),
-        }
-        if frames["15m"].empty:
+        frames = {}
+        for timeframe, period in (
+            ("15m", "60d"),
+            ("1h", "730d"),
+            ("4h", "5y"),
+            ("1d", "10y"),
+        ):
+            if days * pd.Timedelta(days=1) > PROVIDER_WINDOWS[timeframe]:
+                frames[timeframe] = pd.DataFrame()
+            else:
+                frames[timeframe] = _normalise_index(
+                    download_ohlc(symbol, timeframe, period)
+                )
+        if all(frame.empty for frame in frames.values()):
             unavailable.append(symbol)
             continue
         data_by_symbol[symbol] = frames
@@ -295,10 +358,34 @@ def run_historical_backtest(days, watchlist=WATCHLIST):
                 "sl_raw": raw_sl,
             })
             future = m15.loc[m15.index > signal_timestamp]
-            if future.empty:
-                outcome = {"status": "UNCERTAIN", "exit_timestamp": None, "pnl_eur": 0.0}
-            else:
-                outcome = _evaluate_from_entry(historical_signal, future)
+            outcome = _data_unavailable()
+            for index, timeframe in enumerate(TIMEFRAME_ORDER):
+                candidate = frames[timeframe]
+                candidate_future = candidate.loc[candidate.index > signal_timestamp]
+                if candidate_future.empty:
+                    continue
+                historical_signal["timeframe"] = timeframe
+                if index > 0:
+                    finer_timeframe = TIMEFRAME_ORDER[index - 1]
+                    historical_signal["finer_timeframe"] = finer_timeframe
+                    finer_future = frames[finer_timeframe].loc[
+                        frames[finer_timeframe].index > signal_timestamp
+                    ]
+                    next_finer_future = (
+                        frames["15m"].loc[frames["15m"].index > signal_timestamp]
+                        if timeframe == "1d"
+                        else None
+                    )
+                else:
+                    finer_future = None
+                    next_finer_future = None
+                outcome = _evaluate_from_entry(
+                    historical_signal,
+                    candidate_future,
+                    finer_future,
+                    next_finer_future,
+                )
+                break
             outcome.update({
                 "symbol": symbol,
                 "direction": signal["direction"],
