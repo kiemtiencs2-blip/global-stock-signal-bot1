@@ -3,7 +3,7 @@ import streamlit as st
 
 from backtest import run_backtest
 from config import WATCHLIST
-from history_store import initialize_history_store, load_backtest_signals, load_signals, save_signals
+from history_store import initialize_history_store, load_signals, save_signals
 from scanner import dedupe_signals, scan_watchlist
 
 st.set_page_config(page_title="Global Stock Signal Bot V3", page_icon="📈", layout="wide")
@@ -152,7 +152,7 @@ with backtest_tab:
     selected_days = st.selectbox("Historical period", (30, 90, 180, 365), format_func=lambda value: f"{value} days")
     if st.button("Run historical backtest", type="primary", use_container_width=True):
         with st.spinner(f"Replaying {selected_days} days across the fixed 50-stock watchlist..."):
-            checked_signals = load_backtest_signals()
+            checked_signals = load_signals()
             st.session_state["backtest"] = run_backtest(
                 selected_days,
                 WATCHLIST,
