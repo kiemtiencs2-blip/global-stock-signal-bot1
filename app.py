@@ -1,7 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from backtest import BACKTEST_START, run_backtest
+from backtest import run_backtest
 from config import WATCHLIST
 from history_store import initialize_history_store, load_signals, save_signals
 from scanner import dedupe_signals, scan_watchlist
@@ -189,10 +189,6 @@ with backtest_tab:
         if bt.get("message"):
             st.warning(bt["message"])
         bt_df = _build_backtest_dataframe(bt["results"])
-        if not bt_df.empty:
-            bt_df["timestamp"] = pd.to_datetime(bt_df["timestamp"], utc=True)
-            bt_df = bt_df.loc[bt_df["timestamp"] >= BACKTEST_START].copy()
-        st.caption(f"Backtest cutoff: {BACKTEST_START.isoformat()}")
         results = bt_df["result"] if not bt_df.empty else pd.Series(dtype=str)
         wins = int((results == "WIN").sum())
         losses = int((results == "LOSS").sum())
