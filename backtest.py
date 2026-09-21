@@ -44,10 +44,19 @@ TIMEFRAME_DURATION = {
     "1h": pd.Timedelta(hours=1),
     "1d": pd.Timedelta(days=1),
 }
+RESULT_STATUSES = frozenset({"WIN", "LOSS", "OPEN", "DATA_UNAVAILABLE"})
 
 
 def _data_unavailable():
     return {"status": "DATA_UNAVAILABLE", "exit_timestamp": None, "pnl_eur": 0.0}
+
+
+def _normalise_result(result):
+    normalised = dict(result or {})
+    if normalised.get("status") not in RESULT_STATUSES:
+        normalised.update(_data_unavailable())
+    normalised.setdefault("pnl_eur", 0.0)
+    return normalised
 
 
 def _timeframe_is_available(signal_timestamp, timeframe, now=None):
@@ -164,6 +173,7 @@ def _empty_summary(message=""):
 
 
 def _summary(results, message=""):
+    results = [_normalise_result(result) for result in results]
 
     total = len(results)
     wins = sum(1 for r in results if r["status"] == "WIN")
