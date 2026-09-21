@@ -19,6 +19,7 @@ BACKTEST_COLUMNS = (
     "result",
     "P&L",
 )
+__all__ = ["BACKTEST_START", "run_backtest"]
 PROVIDER_WINDOWS = {
     "15m": pd.Timedelta(days=60),
     "1h": pd.Timedelta(days=730),
