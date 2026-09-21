@@ -45,6 +45,11 @@ TIMEFRAME_DURATION = {
     "1d": pd.Timedelta(days=1),
 }
 RESULT_STATUSES = frozenset({"WIN", "LOSS", "OPEN", "DATA_UNAVAILABLE"})
+LEGACY_RESULT_STATUSES = {
+    "UNCERTAIN": "DATA_UNAVAILABLE",
+    "NO ENTRY": "DATA_UNAVAILABLE",
+    "NO DATA": "DATA_UNAVAILABLE",
+}
 
 
 def _data_unavailable():
@@ -53,8 +58,16 @@ def _data_unavailable():
 
 def _normalise_result(result):
     normalised = dict(result or {})
-    if normalised.get("status") not in RESULT_STATUSES:
+    status = normalised.get("status")
+    result_value = normalised.get("result")
+    candidate = status if status in RESULT_STATUSES else result_value
+    normalized_status = LEGACY_RESULT_STATUSES.get(candidate, candidate)
+    if normalized_status not in RESULT_STATUSES:
         normalised.update(_data_unavailable())
+        normalized_status = "DATA_UNAVAILABLE"
+    else:
+        normalised["status"] = normalized_status
+    normalised["result"] = normalized_status
     normalised.setdefault("pnl_eur", 0.0)
     return normalised
 
