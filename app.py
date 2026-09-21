@@ -46,10 +46,7 @@ def _build_backtest_dataframe(results):
     }
     source = frame["status"] if "status" in frame else frame["result"]
     frame["Result"] = source.map(legacy_results).fillna(source)
-    frame["Result"] = frame["Result"].where(
-        frame["Result"].isin(["WIN", "LOSS", "OPEN", "DATA_UNAVAILABLE"]),
-        "DATA_UNAVAILABLE",
-    )
+    frame = frame.loc[frame["Result"].isin(["WIN", "LOSS", "OPEN"])].copy()
     frame["Timestamp"] = frame["timestamp"].map(str)
     frame["Ticker"] = frame["symbol"]
     frame["Direction"] = frame["direction"]
@@ -195,18 +192,16 @@ with backtest_tab:
         wins = int((results == "WIN").sum())
         losses = int((results == "LOSS").sum())
         open_trades = int((results == "OPEN").sum())
-        unavailable = int((results == "DATA_UNAVAILABLE").sum())
         win_rate = (wins / (wins + losses)) * 100 if wins + losses else 0.0
         pnl_values = bt_df["pnl_eur"].astype(float) if not bt_df.empty else pd.Series(dtype=float)
         net_pnl = float(pnl_values.sum())
         cumulative = pnl_values.cumsum()
         max_drawdown = float((cumulative.cummax() - cumulative).max()) if not cumulative.empty else 0.0
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total trades", len(bt_df))
         c2.metric("WIN", wins)
         c3.metric("LOSS", losses)
         c4.metric("OPEN", open_trades)
-        c5.metric("DATA UNAVAILABLE", unavailable)
 
         c6, c7, c8 = st.columns(3)
         c6.metric("Net P&L", f"€{net_pnl:.2f}")

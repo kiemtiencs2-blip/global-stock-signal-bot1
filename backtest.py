@@ -1,4 +1,5 @@
 import pandas as pd
+from functools import lru_cache
 
 from config import WATCHLIST
 from market_data import _currency_for_symbol, download_daily, download_ohlc
@@ -38,10 +39,11 @@ def _rows_at_or_before(df, timestamp):
     return frame.loc[frame.index <= signal_timestamp]
 
 
-TIMEFRAME_ORDER = ("15m", "1h", "1d")
+TIMEFRAME_ORDER = ("15m", "1h", "4h", "1d")
 TIMEFRAME_DURATION = {
     "15m": pd.Timedelta(minutes=15),
     "1h": pd.Timedelta(hours=1),
+    "4h": pd.Timedelta(hours=4),
     "1d": pd.Timedelta(days=1),
 }
 RESULT_STATUSES = frozenset({"WIN", "LOSS", "OPEN", "DATA_UNAVAILABLE"})
@@ -77,11 +79,36 @@ def _timeframe_is_available(signal_timestamp, timeframe, now=None):
     return signal_timestamp >= now - PROVIDER_WINDOWS[timeframe]
 
 
-def _evaluate_from_entry(signal, future, finer_future=None, next_finer_future=None):
+@lru_cache(maxsize=256)
+def _download_historical_cached(symbol, timeframe, period):
+    return _normalise_index(download_ohlc(symbol, timeframe, period))
+
+
+def _historical_frames(symbol, signal_timestamp, now):
+    periods = {"15m": "60d", "1h": "730d", "4h": "5y", "1d": "10y"}
+    frames = {}
+    for timeframe in TIMEFRAME_ORDER:
+        if _timeframe_is_available(signal_timestamp, timeframe, now):
+            frames[timeframe] = _download_historical_cached(
+                symbol, timeframe, periods[timeframe]
+            )
+        else:
+            frames[timeframe] = pd.DataFrame()
+    return frames
+
+
+def _evaluate_from_entry(
+    signal, future, finer_future=None, next_finer_future=None, finer_chain=None
+):
     entry = float(signal["entry_raw"])
     tp = float(signal["tp_raw"])
     sl = float(signal["sl_raw"])
     direction = signal["direction"]
+
+    if finer_chain is None:
+        finer_chain = []
+        if next_finer_future is not None:
+            finer_chain.append(next_finer_future)
 
     for index, row in future.iterrows():
         high = float(row["High"])
@@ -100,11 +127,18 @@ def _evaluate_from_entry(signal, future, finer_future=None, next_finer_future=No
             if finer_rows.empty:
                 return _data_unavailable()
             finer_signal = dict(signal)
-            finer_signal["timeframe"] = signal["finer_timeframe"]
-            if signal["timeframe"] == "1d":
-                finer_signal["finer_timeframe"] = "15m"
+            current_index = TIMEFRAME_ORDER.index(signal["timeframe"])
+            finer_timeframe = signal.get(
+                "finer_timeframe", TIMEFRAME_ORDER[current_index - 1]
+            )
+            finer_signal["timeframe"] = finer_timeframe
+            if current_index > 1:
+                finer_signal["finer_timeframe"] = TIMEFRAME_ORDER[current_index - 2]
             return _evaluate_from_entry(
-                finer_signal, finer_rows, next_finer_future
+                finer_signal,
+                finer_rows,
+                finer_chain[0] if finer_chain else None,
+                finer_chain=finer_chain[1:],
             )
         if tp_hit:
             return {"status": "WIN", "exit_timestamp": index, "pnl_eur": 20.0}
@@ -176,7 +210,6 @@ def _empty_summary(message=""):
         "WIN": 0,
         "LOSS": 0,
         "OPEN": 0,
-        "DATA_UNAVAILABLE": 0,
         "net_pnl": 0.0,
         "win_rate": 0.0,
         "max_drawdown": 0.0,
@@ -186,13 +219,17 @@ def _empty_summary(message=""):
 
 
 def _summary(results, message=""):
-    results = [_normalise_result(result) for result in results]
+    normalized_results = [_normalise_result(result) for result in results]
+    results = [
+        result
+        for result in normalized_results
+        if result["status"] in {"WIN", "LOSS", "OPEN"}
+    ]
 
     total = len(results)
     wins = sum(1 for r in results if r["status"] == "WIN")
     losses = sum(1 for r in results if r["status"] == "LOSS")
     open_trades = sum(1 for r in results if r["status"] == "OPEN")
-    unavailable = sum(1 for r in results if r["status"] == "DATA_UNAVAILABLE")
     net_pnl = sum(float(r["pnl_eur"]) for r in results)
     win_rate = (wins / max(1, wins + losses)) * 100 if (wins + losses) else 0.0
 
@@ -212,7 +249,6 @@ def _summary(results, message=""):
         "WIN": wins,
         "LOSS": losses,
         "OPEN": open_trades,
-        "DATA_UNAVAILABLE": unavailable,
         "net_pnl": net_pnl,
         "win_rate": win_rate,
         "max_drawdown": max_drawdown,
@@ -228,8 +264,6 @@ def _checked_signal_outcome(signal):
     if fx_rate is None or float(fx_rate) <= 0:
         return _data_unavailable()
     now = pd.Timestamp.now(tz="UTC")
-    if not _timeframe_is_available(signal_timestamp, "1h", now):
-        return _data_unavailable()
     entry = float(signal["entry"]) * float(fx_rate)
     tp = float(signal["tp"]) * float(fx_rate)
     sl = float(signal["sl"]) * float(fx_rate)
@@ -239,14 +273,7 @@ def _checked_signal_outcome(signal):
         "sl_raw": sl,
         "direction": signal["direction"],
     }
-    frames = {}
-    for timeframe, period in (("15m", "60d"), ("1h", "730d"), ("1d", "10y")):
-        if _timeframe_is_available(signal_timestamp, timeframe, now):
-            frames[timeframe] = _normalise_index(
-                download_ohlc(symbol, timeframe, period)
-            )
-        else:
-            frames[timeframe] = pd.DataFrame()
+    frames = _historical_frames(symbol, signal_timestamp, now)
     for index, timeframe in enumerate(TIMEFRAME_ORDER):
         frame = frames[timeframe]
         future = frame.loc[frame.index > signal_timestamp].copy()
@@ -259,16 +286,31 @@ def _checked_signal_outcome(signal):
             finer_future = frames[finer_timeframe].loc[
                 frames[finer_timeframe].index > signal_timestamp
             ]
+            next_finer_timeframe = (
+                TIMEFRAME_ORDER[index - 2] if index > 1 else None
+            )
             next_finer_future = (
-                frames["15m"].loc[frames["15m"].index > signal_timestamp]
-                if timeframe == "1d"
+                frames[next_finer_timeframe].loc[
+                    frames[next_finer_timeframe].index > signal_timestamp
+                ]
+                if next_finer_timeframe
                 else None
             )
         else:
             finer_future = None
             next_finer_future = None
+        finer_chain = [
+            frames[lower_timeframe].loc[
+                frames[lower_timeframe].index > signal_timestamp
+            ]
+            for lower_timeframe in reversed(TIMEFRAME_ORDER[:index - 2])
+        ]
         return _evaluate_from_entry(
-            checked_signal, future, finer_future, next_finer_future
+            checked_signal,
+            future,
+            finer_future,
+            next_finer_future,
+            finer_chain,
         )
     return _data_unavailable()
 
@@ -319,8 +361,8 @@ def run_historical_backtest(days, watchlist=WATCHLIST):
             if days * pd.Timedelta(days=1) > PROVIDER_WINDOWS[timeframe]:
                 frames[timeframe] = pd.DataFrame()
             else:
-                frames[timeframe] = _normalise_index(
-                    download_ohlc(symbol, timeframe, period)
+                frames[timeframe] = _download_historical_cached(
+                    symbol, timeframe, period
                 )
         if all(frame.empty for frame in frames.values()):
             unavailable.append(symbol)
@@ -328,7 +370,17 @@ def run_historical_backtest(days, watchlist=WATCHLIST):
         data_by_symbol[symbol] = frames
 
     available_start = min(
-        (frames["15m"].index.min() for frames in data_by_symbol.values()),
+        (
+            next(
+                (
+                    frames[timeframe].index.min()
+                    for timeframe in TIMEFRAME_ORDER
+                    if not frames[timeframe].empty
+                ),
+                None,
+            )
+            for frames in data_by_symbol.values()
+        ),
         default=None,
     )
     if available_start is None:
@@ -344,9 +396,16 @@ def run_historical_backtest(days, watchlist=WATCHLIST):
 
     results = []
     for symbol, frames in data_by_symbol.items():
-        m15 = frames["15m"]
+        entry_timeframe = next(
+            timeframe for timeframe in TIMEFRAME_ORDER if not frames[timeframe].empty
+        )
+        entry_frame = frames[entry_timeframe]
         replay_start = max(start, available_start)
-        timestamps = pd.DatetimeIndex(m15.index[(m15.index >= replay_start) & (m15.index <= now)])
+        timestamps = pd.DatetimeIndex(
+            entry_frame.index[
+                (entry_frame.index >= replay_start) & (entry_frame.index <= now)
+            ]
+        )
         last_signal = {}
         for signal_timestamp in timestamps:
             signal_timestamp = _utc_timestamp(signal_timestamp)
@@ -357,11 +416,11 @@ def run_historical_backtest(days, watchlist=WATCHLIST):
             historical_quote = {
                 "verified": True,
                 "status": "HISTORICAL",
-                "price": float(context["15m"].iloc[-1]["Close"]),
+                "price": float(context[entry_timeframe].iloc[-1]["Close"]),
                 "currency": _currency_for_symbol(symbol),
                 "exchange": "Yahoo historical candle",
                 "timestamp": signal_timestamp,
-                "source": "Yahoo Finance historical 15m",
+                "source": f"Yahoo Finance historical {entry_timeframe}",
             }
             signal = make_signal(symbol, context, market_quote=historical_quote)
             if signal is None:
@@ -370,7 +429,7 @@ def run_historical_backtest(days, watchlist=WATCHLIST):
             if key in last_signal and signal_timestamp <= last_signal[key]:
                 continue
 
-            raw_price = float(context["15m"].iloc[-1]["Close"])
+            raw_price = float(context[entry_timeframe].iloc[-1]["Close"])
             raw_tp = raw_price * (1 + 20 / 1500) if signal["direction"] == "LONG" else raw_price * (1 - 20 / 1500)
             raw_sl = raw_price * (1 - 20 / 1500) if signal["direction"] == "LONG" else raw_price * (1 + 20 / 1500)
             historical_signal = dict(signal)
@@ -380,7 +439,6 @@ def run_historical_backtest(days, watchlist=WATCHLIST):
                 "tp_raw": raw_tp,
                 "sl_raw": raw_sl,
             })
-            future = m15.loc[m15.index > signal_timestamp]
             outcome = _data_unavailable()
             for index, timeframe in enumerate(TIMEFRAME_ORDER):
                 candidate = frames[timeframe]
