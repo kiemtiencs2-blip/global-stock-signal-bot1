@@ -46,16 +46,11 @@ TIMEFRAME_DURATION = {
     "4h": pd.Timedelta(hours=4),
     "1d": pd.Timedelta(days=1),
 }
-RESULT_STATUSES = frozenset({"WIN", "LOSS", "OPEN", "DATA_UNAVAILABLE"})
-LEGACY_RESULT_STATUSES = {
-    "UNCERTAIN": "DATA_UNAVAILABLE",
-    "NO ENTRY": "DATA_UNAVAILABLE",
-    "NO DATA": "DATA_UNAVAILABLE",
-}
+RESULT_STATUSES = frozenset({"WIN", "LOSS", "OPEN"})
 
 
-def _data_unavailable():
-    return {"status": "DATA_UNAVAILABLE", "exit_timestamp": None, "pnl_eur": 0.0}
+def _open_outcome():
+    return {"status": "OPEN", "exit_timestamp": None, "pnl_eur": 0.0}
 
 
 def _normalise_result(result):
@@ -63,10 +58,10 @@ def _normalise_result(result):
     status = normalised.get("status")
     result_value = normalised.get("result")
     candidate = status if status in RESULT_STATUSES else result_value
-    normalized_status = LEGACY_RESULT_STATUSES.get(candidate, candidate)
+    normalized_status = candidate
     if normalized_status not in RESULT_STATUSES:
-        normalised.update(_data_unavailable())
-        normalized_status = "DATA_UNAVAILABLE"
+        normalised.update(_open_outcome())
+        normalized_status = "OPEN"
     else:
         normalised["status"] = normalized_status
     normalised["result"] = normalized_status
@@ -119,13 +114,13 @@ def _evaluate_from_entry(
             tp_hit, sl_hit = low <= tp, high >= sl
         if tp_hit and sl_hit:
             if finer_future is None or finer_future.empty:
-                return _data_unavailable()
+                return _open_outcome()
             finer_rows = finer_future.loc[
                 (finer_future.index >= index)
                 & (finer_future.index < index + TIMEFRAME_DURATION[signal["timeframe"]])
             ]
             if finer_rows.empty:
-                return _data_unavailable()
+                return _open_outcome()
             finer_signal = dict(signal)
             current_index = TIMEFRAME_ORDER.index(signal["timeframe"])
             finer_timeframe = signal.get(
@@ -151,7 +146,7 @@ def evaluate_signal(signal, df=None, period="3mo"):
     if df is None:
         df = download_daily(signal["symbol"], period=period)
     if df is None or df.empty:
-        return {"status": "DATA_UNAVAILABLE", "pnl_eur": 0.0, "timestamp": None}
+        return _open_outcome()
 
     df = _normalise_index(df)
 
@@ -167,7 +162,7 @@ def evaluate_signal(signal, df=None, period="3mo"):
 
     future = df.loc[df.index >= signal_ts].copy()
     if future.empty:
-        return {"status": "DATA_UNAVAILABLE", "pnl_eur": 0.0, "timestamp": None}
+        return _open_outcome()
 
     hit_entry = False
     entry_idx = None
@@ -180,7 +175,7 @@ def evaluate_signal(signal, df=None, period="3mo"):
             break
 
     if not hit_entry:
-        return {"status": "DATA_UNAVAILABLE", "pnl_eur": 0.0, "timestamp": None}
+        return _open_outcome()
 
     entry_idx = _utc_timestamp(entry_idx)
     after_entry = future.loc[future.index >= entry_idx].copy()
@@ -195,7 +190,7 @@ def evaluate_signal(signal, df=None, period="3mo"):
             sl_hit = hi >= sl
 
         if tp_hit and sl_hit:
-            return {"status": "DATA_UNAVAILABLE", "timestamp": idx, "pnl_eur": 0.0}
+            return _open_outcome()
         if tp_hit:
             return {"status": "WIN", "timestamp": idx, "pnl_eur": 20.0}
         if sl_hit:
@@ -262,7 +257,7 @@ def _checked_signal_outcome(signal):
     signal_timestamp = _utc_timestamp(signal["timestamp"])
     fx_rate = signal.get("fx_rate")
     if fx_rate is None or float(fx_rate) <= 0:
-        return _data_unavailable()
+        return _open_outcome()
     now = pd.Timestamp.now(tz="UTC")
     entry = float(signal["entry"]) * float(fx_rate)
     tp = float(signal["tp"]) * float(fx_rate)
@@ -312,7 +307,7 @@ def _checked_signal_outcome(signal):
             next_finer_future,
             finer_chain,
         )
-    return _data_unavailable()
+    return _open_outcome()
 
 
 def run_checked_backtest(signals):
@@ -321,7 +316,7 @@ def run_checked_backtest(signals):
         try:
             outcome = _checked_signal_outcome(signal)
         except Exception:
-            outcome = _data_unavailable()
+            outcome = _open_outcome()
         outcome.update({
             "symbol": signal.get("symbol", ""),
             "direction": signal.get("direction", ""),
@@ -330,6 +325,7 @@ def run_checked_backtest(signals):
             "sl": signal.get("sl", 0.0),
             "score": signal.get("score", 0),
             "setup": signal.get("setup", ""),
+            "signal_id": signal.get("signal_id", ""),
             "timestamp": _utc_timestamp(signal["timestamp"]),
             "entry_status": "FILLED",
         })
@@ -439,7 +435,7 @@ def run_historical_backtest(days, watchlist=WATCHLIST):
                 "tp_raw": raw_tp,
                 "sl_raw": raw_sl,
             })
-            outcome = _data_unavailable()
+            outcome = _open_outcome()
             for index, timeframe in enumerate(TIMEFRAME_ORDER):
                 candidate = frames[timeframe]
                 candidate_future = candidate.loc[candidate.index > signal_timestamp]
@@ -475,6 +471,7 @@ def run_historical_backtest(days, watchlist=WATCHLIST):
                 "sl": signal["sl"],
                 "score": signal["score"],
                 "setup": signal["setup"],
+                "signal_id": signal.get("signal_id", ""),
                 "timestamp": signal_timestamp,
             })
             results.append(_normalise_result(outcome))

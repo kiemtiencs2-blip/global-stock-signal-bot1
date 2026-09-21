@@ -39,13 +39,8 @@ def _build_backtest_dataframe(results):
     frame = pd.DataFrame(results)
     if frame.empty:
         return frame
-    legacy_results = {
-        "UNCERTAIN": "DATA_UNAVAILABLE",
-        "NO ENTRY": "DATA_UNAVAILABLE",
-        "NO DATA": "DATA_UNAVAILABLE",
-    }
     source = frame["status"] if "status" in frame else frame["result"]
-    frame["Result"] = source.map(legacy_results).fillna(source)
+    frame["Result"] = source
     frame = frame.loc[frame["Result"].isin(["WIN", "LOSS", "OPEN"])].copy()
     frame["Timestamp"] = frame["timestamp"].map(str)
     frame["Ticker"] = frame["symbol"]
@@ -211,7 +206,8 @@ with backtest_tab:
         if bt_df.empty:
             st.info("No historical V3 setups were found in the available data window.")
         else:
-            st.dataframe(bt_df[["Timestamp", "Ticker", "Direction", "EUR Entry", "EUR TP", "EUR SL", "Result", "P&L"]], use_container_width=True, hide_index=True)
+            bt_df["result"] = bt_df["Result"]
+            st.dataframe(bt_df[["signal_id", "Timestamp", "Ticker", "Direction", "EUR Entry", "EUR TP", "EUR SL", "result", "P&L"]], use_container_width=True, hide_index=True)
 
 with history_tab:
     st.session_state["history"] = load_signals()
