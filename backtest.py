@@ -7,7 +7,7 @@ from strategy import make_signal
 
 
 PERIOD_DAYS = (30, 90, 180, 365)
-BACKTEST_START = pd.Timestamp("2026-09-21T18:09:32Z")
+BACKTEST_START = pd.Timestamp("2026-09-21T18:18:49Z")
 BACKTEST_COLUMNS = (
     "signal_id",
     "timestamp",
