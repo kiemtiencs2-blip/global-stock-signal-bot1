@@ -1,22 +1,49 @@
 import hashlib
 import json
-import sqlite3
-from pathlib import Path
+from datetime import datetime, timezone
+
+import streamlit as st
 
 
-DB_PATH = Path(__file__).with_name("signals.sqlite3")
-BACKTEST_RESULT_STATUSES = frozenset({"WIN", "LOSS", "OPEN", "DATA_UNAVAILABLE"})
-LEGACY_BACKTEST_RESULTS = {
-    "UNCERTAIN": "DATA_UNAVAILABLE",
-    "NO ENTRY": "DATA_UNAVAILABLE",
-    "NO DATA": "DATA_UNAVAILABLE",
-}
+SIGNALS_TABLE = "signals"
+REQUIRED_SIGNAL_FIELDS = (
+    "signal_id", "ticker", "side", "timestamp", "entry", "tp", "sl",
+    "status", "pnl", "source", "created_at", "closed_at",
+)
+_CLIENT_OVERRIDE = None
 
 
-def _connection():
-    connection = sqlite3.connect(DB_PATH)
-    connection.row_factory = sqlite3.Row
-    return connection
+class HistoryStoreConfigurationError(RuntimeError):
+    """Raised when the persistent Supabase history store is not configured."""
+
+
+def _client():
+    if _CLIENT_OVERRIDE is not None:
+        return _CLIENT_OVERRIDE
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+    except Exception as exc:
+        raise HistoryStoreConfigurationError(
+            "Persistent signal history is not configured. Add SUPABASE_URL "
+            "and SUPABASE_KEY to Streamlit Secrets."
+        ) from exc
+    try:
+        from supabase import create_client
+        return create_client(url, key)
+    except ImportError as exc:
+        raise HistoryStoreConfigurationError(
+            "The supabase package is required for persistent signal history."
+        ) from exc
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _set_client_for_testing(client):
+    global _CLIENT_OVERRIDE
+    _CLIENT_OVERRIDE = client
 
 
 def _signal_id(signal):
@@ -33,71 +60,81 @@ def _signal_id(signal):
 
 
 def initialize_history_store():
-    with _connection() as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS signals (
-                signal_id TEXT PRIMARY KEY,
-                check_timestamp TEXT NOT NULL,
-                symbol TEXT NOT NULL,
-                direction TEXT NOT NULL,
-                entry REAL NOT NULL,
-                tp REAL NOT NULL,
-                sl REAL NOT NULL,
-                payload TEXT NOT NULL
-            )
-            """
-        )
+    """Validate that the persistent backend can be configured."""
+    try:
+        return _client()
+    except HistoryStoreConfigurationError:
+        return None
+
+
+def _to_signal_record(row):
+    record = dict(row)
+    record.update({
+        "symbol": record.get("ticker", ""),
+        "direction": record.get("side", ""),
+        "timestamp": record.get("timestamp"),
+        "result": record.get("status", "OPEN"),
+        "status": record.get("status", "OPEN"),
+        "pnl_eur": float(record.get("pnl", 0.0) or 0.0),
+        "source": record.get("source", "V3 CHECK"),
+        "fx_rate": 1.0,
+    })
+    return record
 
 
 def save_signals(signals):
-    initialize_history_store()
+    client = _client()
     stored = []
-    with _connection() as connection:
-        for signal in signals or []:
-            record = dict(signal)
-            signal_id = record.setdefault("signal_id", _signal_id(record))
-            record.setdefault("check_timestamp", record.get("timestamp"))
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO signals
-                (signal_id, check_timestamp, symbol, direction, entry, tp, sl, payload)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    signal_id,
-                    str(record.get("check_timestamp")),
-                    record["symbol"],
-                    record["direction"],
-                    float(record["entry"]),
-                    float(record["tp"]),
-                    float(record["sl"]),
-                    json.dumps(record, default=str),
-                ),
-            )
-            stored.append(record)
+    for signal in signals or []:
+        record = dict(signal)
+        signal_id = record.setdefault("signal_id", _signal_id(record))
+        ticker = record["symbol"]
+        side = record["direction"]
+        duplicate = client.table(SIGNALS_TABLE).select("signal_id").eq(
+            "ticker", ticker
+        ).eq("side", side).eq("entry", float(record["entry"])).eq(
+            "tp", float(record["tp"])
+        ).eq("sl", float(record["sl"])).eq("status", "OPEN").execute()
+        if duplicate.data:
+            stored.append(_to_signal_record({**record, "signal_id": duplicate.data[0]["signal_id"]}))
+            continue
+        row = {
+            "signal_id": signal_id,
+            "ticker": ticker,
+            "side": side,
+            "timestamp": str(record["timestamp"]),
+            "entry": float(record["entry"]),
+            "tp": float(record["tp"]),
+            "sl": float(record["sl"]),
+            "status": "OPEN",
+            "pnl": 0.0,
+            "source": "V3 CHECK",
+            "created_at": _now_iso(),
+            "closed_at": None,
+        }
+        client.table(SIGNALS_TABLE).insert(row).execute()
+        stored.append(_to_signal_record(row))
     return stored
 
 
 def load_signals():
-    initialize_history_store()
-    with _connection() as connection:
-        rows = connection.execute(
-            "SELECT payload FROM signals ORDER BY check_timestamp ASC, signal_id ASC"
-        ).fetchall()
-    records = []
-    for row in rows:
-        record = json.loads(row["payload"])
-        result = record.get("result", record.get("status"))
-        normalized_result = LEGACY_BACKTEST_RESULTS.get(result, result)
-        if normalized_result in BACKTEST_RESULT_STATUSES:
-            record["result"] = normalized_result
-            record["status"] = normalized_result
-        records.append(record)
-    return records
+    response = _client().table(SIGNALS_TABLE).select("*").order(
+        "timestamp", desc=False
+    ).execute()
+    return [_to_signal_record(row) for row in (response.data or [])]
+
+
+def update_signal_result(signal_id, status, pnl):
+    if status not in {"OPEN", "WIN", "LOSS"}:
+        raise ValueError(f"Unsupported signal status: {status}")
+    values = {"status": status, "pnl": float(pnl)}
+    if status in {"WIN", "LOSS"}:
+        values["closed_at"] = _now_iso()
+    _client().table(SIGNALS_TABLE).update(values).eq(
+        "signal_id", signal_id
+    ).execute()
 
 
 def count_signals():
-    initialize_history_store()
-    with _connection() as connection:
-        return connection.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
+    response = _client().table(SIGNALS_TABLE).select("signal_id", count="exact").execute()
+    return int(response.count or 0)

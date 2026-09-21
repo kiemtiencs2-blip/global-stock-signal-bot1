@@ -3,11 +3,24 @@ import streamlit as st
 
 from backtest import run_backtest
 from config import WATCHLIST
-from history_store import initialize_history_store, load_signals, save_signals
+from history_store import (
+    HistoryStoreConfigurationError,
+    initialize_history_store,
+    load_signals,
+    save_signals,
+)
 from scanner import dedupe_signals, scan_watchlist
 
 st.set_page_config(page_title="Global Stock Signal Bot V3", page_icon="📈", layout="wide")
 initialize_history_store()
+
+
+def _load_persistent_signals():
+    try:
+        return load_signals()
+    except HistoryStoreConfigurationError as exc:
+        st.error(str(exc))
+        return []
 
 
 def _format_fx_rate(value):
@@ -64,10 +77,17 @@ st.caption("Yahoo Finance data only — not Trade Republic / LS Exchange prices.
 
 if "results" not in st.session_state:
     st.session_state["results"] = []
-if "history" not in st.session_state:
-    st.session_state["history"] = load_signals()
+st.session_state["history"] = _load_persistent_signals()
 if "active" not in st.session_state:
-    st.session_state["active"] = []
+    st.session_state["active"] = [
+        signal for signal in st.session_state["history"]
+        if signal.get("status", "OPEN") == "OPEN"
+    ]
+else:
+    st.session_state["active"] = [
+        signal for signal in st.session_state["history"]
+        if signal.get("status", "OPEN") == "OPEN"
+    ]
 
 c1, c2, c3 = st.columns(3)
 c1.metric("Watchlist", "50")
@@ -92,12 +112,19 @@ with check_tab:
         with st.spinner("Scanning 50 tickers in parallel with per-ticker timeouts..."):
             fresh_results = scan_watchlist(WATCHLIST, progress_callback=update_scan_progress)
             st.session_state["price_rejections"] = scan_watchlist.last_rejections
-            stored_results = save_signals(fresh_results)
-            st.session_state["history"] = load_signals()
+            try:
+                stored_results = save_signals(fresh_results)
+                st.session_state["history"] = _load_persistent_signals()
+            except HistoryStoreConfigurationError as exc:
+                st.error(str(exc))
+                stored_results = []
             results = dedupe_signals(stored_results)
         progress.progress(1.0, text=f"Scan complete: {len(results)} signals from {len(WATCHLIST)} tickers")
         st.session_state["results"] = results
-        st.session_state["active"] = results
+        st.session_state["active"] = [
+            signal for signal in st.session_state["history"]
+            if signal.get("status", "OPEN") == "OPEN"
+        ]
         st.session_state["checked_at"] = pd.Timestamp.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     if st.session_state["results"]:
@@ -175,7 +202,7 @@ with backtest_tab:
     selected_days = st.selectbox("Historical period", (30, 90, 180, 365), format_func=lambda value: f"{value} days")
     if st.button("Run historical backtest", type="primary", use_container_width=True):
         with st.spinner(f"Replaying {selected_days} days across the fixed 50-stock watchlist..."):
-            checked_signals = load_signals()
+            checked_signals = _load_persistent_signals()
             st.session_state["backtest"] = run_backtest(
                 selected_days,
                 WATCHLIST,
@@ -215,7 +242,7 @@ with backtest_tab:
             st.dataframe(bt_df[["signal_id", "timestamp", "ticker", "direction", "EUR Entry", "EUR TP", "EUR SL", "result", "P&L"]], use_container_width=True, hide_index=True)
 
 with history_tab:
-    st.session_state["history"] = load_signals()
+    st.session_state["history"] = _load_persistent_signals()
     if not st.session_state["history"]:
         st.info("No historical signal scans yet.")
     else:
