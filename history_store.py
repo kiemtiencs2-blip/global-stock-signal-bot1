@@ -5,6 +5,12 @@ from pathlib import Path
 
 
 DB_PATH = Path(__file__).with_name("signals.sqlite3")
+BACKTEST_RESULT_STATUSES = frozenset({"WIN", "LOSS", "OPEN", "DATA_UNAVAILABLE"})
+LEGACY_BACKTEST_RESULTS = {
+    "UNCERTAIN": "DATA_UNAVAILABLE",
+    "NO ENTRY": "DATA_UNAVAILABLE",
+    "NO DATA": "DATA_UNAVAILABLE",
+}
 
 
 def _connection():
@@ -80,6 +86,25 @@ def load_signals():
             "SELECT payload FROM signals ORDER BY check_timestamp ASC, signal_id ASC"
         ).fetchall()
     return [json.loads(row["payload"]) for row in rows]
+
+
+def load_backtest_signals():
+    """Return saved signals with legacy backtest result fields normalized."""
+    records = []
+    for signal in load_signals():
+        record = dict(signal)
+        result = record.get("result")
+        status = record.get("status")
+        legacy_result = result if result in LEGACY_BACKTEST_RESULTS else status
+        if legacy_result in LEGACY_BACKTEST_RESULTS:
+            normalized = LEGACY_BACKTEST_RESULTS[legacy_result]
+            record["result"] = normalized
+            record["status"] = normalized
+        elif result in BACKTEST_RESULT_STATUSES:
+            record["result"] = result
+            record["status"] = result
+        records.append(record)
+    return records
 
 
 def count_signals():
