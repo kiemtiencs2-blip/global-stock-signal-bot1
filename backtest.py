@@ -343,11 +343,20 @@ def _checked_signal_outcome(signal):
 def run_checked_backtest(signals):
     results = []
     seen_signal_ids = set()
-    for signal in signals or []:
+    signals_frame = (
+        signals.copy()
+        if isinstance(signals, pd.DataFrame)
+        else pd.DataFrame(signals or [])
+    )
+    if signals_frame.empty:
+        return _summary(results, "Backtest used the exact timestamp recorded by CHECK without hindsight.")
+    signals_frame["_signal_timestamp"] = signals_frame["timestamp"].map(_utc_timestamp)
+    signals_frame = signals_frame.loc[
+        signals_frame["_signal_timestamp"] >= BACKTEST_START
+    ]
+    for signal in signals_frame.drop(columns=["_signal_timestamp"]).to_dict("records"):
         signal_timestamp = _utc_timestamp(signal["timestamp"])
         signal_id = signal.get("signal_id", "")
-        if signal_timestamp < BACKTEST_START:
-            continue
         if signal_id and signal_id in seen_signal_ids:
             continue
         if signal_id:
