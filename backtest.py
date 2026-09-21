@@ -7,6 +7,18 @@ from strategy import make_signal
 
 
 PERIOD_DAYS = (30, 90, 180, 365)
+BACKTEST_START = pd.Timestamp("2026-09-21T18:09:32Z")
+BACKTEST_COLUMNS = (
+    "signal_id",
+    "timestamp",
+    "ticker",
+    "direction",
+    "EUR Entry",
+    "EUR TP",
+    "EUR SL",
+    "result",
+    "P&L",
+)
 PROVIDER_WINDOWS = {
     "15m": pd.Timedelta(days=60),
     "1h": pd.Timedelta(days=730),
@@ -51,6 +63,24 @@ RESULT_STATUSES = frozenset({"WIN", "LOSS", "OPEN"})
 
 def _open_outcome():
     return {"status": "OPEN", "exit_timestamp": None, "pnl_eur": 0.0}
+
+
+def _results_dataframe(results):
+    rows = []
+    for record in results:
+        result = _normalise_result(record)
+        rows.append({
+            "signal_id": record.get("signal_id", ""),
+            "timestamp": str(record.get("timestamp", "")),
+            "ticker": record.get("symbol", ""),
+            "direction": record.get("direction", ""),
+            "EUR Entry": f"€{float(record.get('entry', 0.0)):.2f}",
+            "EUR TP": f"€{float(record.get('tp', 0.0)):.2f}",
+            "EUR SL": f"€{float(record.get('sl', 0.0)):.2f}",
+            "result": result["status"],
+            "P&L": f"€{float(result.get('pnl_eur', 0.0)):.2f}",
+        })
+    return pd.DataFrame(rows, columns=BACKTEST_COLUMNS)
 
 
 def _normalise_result(result):
@@ -208,7 +238,7 @@ def _empty_summary(message=""):
         "net_pnl": 0.0,
         "win_rate": 0.0,
         "max_drawdown": 0.0,
-        "results": [],
+        "results": _results_dataframe([]),
         "message": message,
     }
 
@@ -247,7 +277,7 @@ def _summary(results, message=""):
         "net_pnl": net_pnl,
         "win_rate": win_rate,
         "max_drawdown": max_drawdown,
-        "results": results,
+        "results": _results_dataframe(results),
         "message": message,
     }
 
@@ -312,7 +342,16 @@ def _checked_signal_outcome(signal):
 
 def run_checked_backtest(signals):
     results = []
+    seen_signal_ids = set()
     for signal in signals or []:
+        signal_timestamp = _utc_timestamp(signal["timestamp"])
+        signal_id = signal.get("signal_id", "")
+        if signal_timestamp < BACKTEST_START:
+            continue
+        if signal_id and signal_id in seen_signal_ids:
+            continue
+        if signal_id:
+            seen_signal_ids.add(signal_id)
         try:
             outcome = _checked_signal_outcome(signal)
         except Exception:
@@ -326,7 +365,7 @@ def run_checked_backtest(signals):
             "score": signal.get("score", 0),
             "setup": signal.get("setup", ""),
             "signal_id": signal.get("signal_id", ""),
-            "timestamp": _utc_timestamp(signal["timestamp"]),
+            "timestamp": signal_timestamp,
             "entry_status": "FILLED",
         })
         results.append(_normalise_result(outcome))
@@ -396,7 +435,7 @@ def run_historical_backtest(days, watchlist=WATCHLIST):
             timeframe for timeframe in TIMEFRAME_ORDER if not frames[timeframe].empty
         )
         entry_frame = frames[entry_timeframe]
-        replay_start = max(start, available_start)
+        replay_start = max(start, available_start, BACKTEST_START)
         timestamps = pd.DatetimeIndex(
             entry_frame.index[
                 (entry_frame.index >= replay_start) & (entry_frame.index <= now)

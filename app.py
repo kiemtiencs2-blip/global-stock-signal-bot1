@@ -37,19 +37,25 @@ def _ensure_signal_columns(frame):
 
 def _build_backtest_dataframe(results):
     frame = pd.DataFrame(results)
+    columns = [
+        "signal_id", "timestamp", "ticker", "direction", "EUR Entry",
+        "EUR TP", "EUR SL", "result", "P&L",
+    ]
     if frame.empty:
-        return frame
+        return pd.DataFrame(columns=columns)
+    if set(columns).issubset(frame.columns):
+        return frame[columns].copy()
     source = frame["status"] if "status" in frame else frame["result"]
-    frame["Result"] = source
-    frame = frame.loc[frame["Result"].isin(["WIN", "LOSS", "OPEN"])].copy()
-    frame["Timestamp"] = frame["timestamp"].map(str)
-    frame["Ticker"] = frame["symbol"]
-    frame["Direction"] = frame["direction"]
+    frame["result"] = source.where(source.isin(["WIN", "LOSS", "OPEN"]), "OPEN")
+    frame["signal_id"] = frame.get("signal_id", "")
+    frame["timestamp"] = frame["timestamp"].map(str)
+    frame["ticker"] = frame["symbol"]
     frame["EUR Entry"] = frame["entry"].map(lambda x: f"€{float(x):.2f}")
     frame["EUR TP"] = frame["tp"].map(lambda x: f"€{float(x):.2f}")
     frame["EUR SL"] = frame["sl"].map(lambda x: f"€{float(x):.2f}")
-    frame["P&L"] = frame["pnl_eur"].map(lambda x: f"€{float(x):.2f}")
-    return frame
+    pnl = frame["result"].map({"WIN": 20.0, "LOSS": -20.0, "OPEN": 0.0})
+    frame["P&L"] = pnl.map(lambda x: f"€{x:.2f}")
+    return frame[columns].copy()
 
 
 st.title("🌍 Global Stock Signal Bot V3")
@@ -183,12 +189,12 @@ with backtest_tab:
         if bt.get("message"):
             st.warning(bt["message"])
         bt_df = _build_backtest_dataframe(bt["results"])
-        results = bt_df["Result"] if not bt_df.empty else pd.Series(dtype=str)
+        results = bt_df["result"] if not bt_df.empty else pd.Series(dtype=str)
         wins = int((results == "WIN").sum())
         losses = int((results == "LOSS").sum())
         open_trades = int((results == "OPEN").sum())
         win_rate = (wins / (wins + losses)) * 100 if wins + losses else 0.0
-        pnl_values = bt_df["pnl_eur"].astype(float) if not bt_df.empty else pd.Series(dtype=float)
+        pnl_values = results.map({"WIN": 20.0, "LOSS": -20.0, "OPEN": 0.0})
         net_pnl = float(pnl_values.sum())
         cumulative = pnl_values.cumsum()
         max_drawdown = float((cumulative.cummax() - cumulative).max()) if not cumulative.empty else 0.0
@@ -206,8 +212,7 @@ with backtest_tab:
         if bt_df.empty:
             st.info("No historical V3 setups were found in the available data window.")
         else:
-            bt_df["result"] = bt_df["Result"]
-            st.dataframe(bt_df[["signal_id", "Timestamp", "Ticker", "Direction", "EUR Entry", "EUR TP", "EUR SL", "result", "P&L"]], use_container_width=True, hide_index=True)
+            st.dataframe(bt_df[["signal_id", "timestamp", "ticker", "direction", "EUR Entry", "EUR TP", "EUR SL", "result", "P&L"]], use_container_width=True, hide_index=True)
 
 with history_tab:
     st.session_state["history"] = load_signals()
