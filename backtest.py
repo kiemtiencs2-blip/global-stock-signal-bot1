@@ -19,7 +19,6 @@ BACKTEST_COLUMNS = (
     "result",
     "P&L",
 )
-__all__ = ["BACKTEST_START", "run_backtest"]
 PROVIDER_WINDOWS = {
     "15m": pd.Timedelta(days=60),
     "1h": pd.Timedelta(days=730),
@@ -536,3 +535,6 @@ def run_backtest(days=30, watchlist=WATCHLIST, signals=None):
     if signals is not None:
         return run_checked_backtest(signals)
     return run_historical_backtest(days=days, watchlist=watchlist)
+
+
+__all__ = ["BACKTEST_START", "run_backtest"]
