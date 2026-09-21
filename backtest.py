@@ -373,9 +373,6 @@ def run_checked_backtest(signals):
             "timestamp": signal_timestamp,
             "entry_status": "FILLED",
         })
-        if signal_id and outcome["status"] in {"WIN", "LOSS"}:
-            from history_store import update_signal_result
-            update_signal_result(signal_id, outcome["status"], outcome["pnl_eur"])
         results.append(_normalise_result(outcome))
     return _summary(results, "Backtest used the exact timestamp recorded by CHECK without hindsight.")
 
