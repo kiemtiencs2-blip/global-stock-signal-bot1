@@ -278,7 +278,7 @@ def run_checked_backtest(signals):
             "timestamp": _utc_timestamp(signal["timestamp"]),
             "entry_status": "FILLED",
         })
-        results.append(outcome)
+        results.append(_normalise_result(outcome))
     return _summary(results, "Backtest used the exact timestamp recorded by CHECK without hindsight.")
 
 
@@ -406,7 +406,7 @@ def run_historical_backtest(days, watchlist=WATCHLIST):
                 "setup": signal["setup"],
                 "timestamp": signal_timestamp,
             })
-            results.append(outcome)
+            results.append(_normalise_result(outcome))
             last_signal[key] = outcome["exit_timestamp"] or signal_timestamp
 
     if unavailable:
